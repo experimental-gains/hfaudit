@@ -35,11 +35,29 @@ var extractPatterns = []struct {
 	// the model ID can be positional (2nd arg) or the model= keyword.
 	{regexp.MustCompile(`\bpipeline\(\s*["'][^"']*["']\s*,\s*["'](` + idPattern + `)["']`), kindModel},
 	{regexp.MustCompile(`\bpipeline\([^)]*?\bmodel\s*=\s*["'](` + idPattern + `)["']`), kindModel},
-	// hf_hub_download(repo_id="org/name") / snapshot_download(repo_id=...)
-	{regexp.MustCompile(`\b(?:hf_hub_download|snapshot_download)\([^)]*?\brepo_id\s*=\s*["'](` + idPattern + `)["']`), kindModel},
 	// load_dataset("org/name")
 	{regexp.MustCompile(`\bload_dataset\(\s*["'](` + idPattern + `)["']`), kindDataset},
 }
+
+// hfHubDownloadCallPattern matches an hf_hub_download(...)/snapshot_download(...)
+// call's whole argument list as one blob, rather than jumping straight to
+// repo_id= the way extractPatterns' other entries do. Both functions also
+// take a repo_type= keyword telling the Hub whether repo_id names a model or
+// a dataset (or a Space, which this tool doesn't check), and repo_type can
+// legally appear either before or after repo_id since both are keyword
+// arguments — capturing the whole call first lets repoTypeArgPattern find it
+// regardless of order.
+var hfHubDownloadCallPattern = regexp.MustCompile(`\b(?:hf_hub_download|snapshot_download)\(([^)]*)\)`)
+
+var repoIDArgPattern = regexp.MustCompile(`\brepo_id\s*=\s*["'](` + idPattern + `)["']`)
+
+// repoTypeArgPattern matches the repo_type= keyword argument. The same ID
+// string can be a real model under one kind and nonexistent under another,
+// so getting this wrong means checking the wrong Hub endpoint entirely: a
+// real, existing dataset (e.g. allenai/c4, confirmed 200 on
+// /api/datasets/allenai/c4) looked up as a model (401 on /api/models/) comes
+// back a false "not_found" hallucination.
+var repoTypeArgPattern = regexp.MustCompile(`\brepo_type\s*=\s*["'](\w+)["']`)
 
 // extractReferences scans source text for Hugging Face Hub references and
 // reports each match's 1-based line number via "label:line" in source.
@@ -62,6 +80,23 @@ func extractReferences(text, label string) []repoRef {
 				source: fmt.Sprintf("%s:%d", label, line),
 			})
 		}
+	}
+	for _, m := range hfHubDownloadCallPattern.FindAllStringSubmatchIndex(text, -1) {
+		args := text[m[2]:m[3]]
+		idm := repoIDArgPattern.FindStringSubmatch(args)
+		if idm == nil {
+			continue
+		}
+		kind := kindModel
+		if tm := repoTypeArgPattern.FindStringSubmatch(args); tm != nil && tm[1] == "dataset" {
+			kind = kindDataset
+		}
+		line := 1 + strings.Count(text[:m[0]], "\n")
+		refs = append(refs, repoRef{
+			id:     idm[1],
+			kind:   kind,
+			source: fmt.Sprintf("%s:%d", label, line),
+		})
 	}
 	return refs
 }

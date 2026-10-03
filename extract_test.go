@@ -14,6 +14,9 @@ clf2 = pipeline("text-generation", model="meta-llama/Llama-2-7b")
 ds = load_dataset("stanfordnlp/imdb")
 p = hf_hub_download(repo_id="runwayml/stable-diffusion-v1-5", filename="config.json")
 snap = snapshot_download(repo_id="black-forest-labs/FLUX.1-dev")
+dl = hf_hub_download(repo_id="allenai/c4", filename="README.md", repo_type="dataset")
+dl2 = hf_hub_download(repo_type="dataset", repo_id="allenai/soda", filename="README.md")
+snapds = snapshot_download(repo_id="huggingfaceh4/no_robots", repo_type="dataset")
 local = AutoModel.from_pretrained("./local-dir")
 nocheck = AutoModel.from_pretrained("bert-base-uncased")
 wrapped = AutoModel.from_pretrained(
@@ -35,6 +38,9 @@ clf3 = pipeline(
 		"stanfordnlp/imdb":                                           kindDataset,
 		"runwayml/stable-diffusion-v1-5":                             kindModel,
 		"black-forest-labs/FLUX.1-dev":                               kindModel,
+		"allenai/c4":                                                 kindDataset,
+		"allenai/soda":                                               kindDataset,
+		"huggingfaceh4/no_robots":                                    kindDataset,
 		"facebook/bart-large":                                        kindModel,
 		"tiiuae/falcon-7b":                                           kindModel,
 	}
