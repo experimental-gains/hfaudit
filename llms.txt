@@ -18,5 +18,11 @@ per ID, so it reports a real existence check, not a guess.
 - [README](https://github.com/experimental-gains/hfaudit/blob/main/README.md): full status list, exit codes, and example output
 - [pkg.go.dev](https://pkg.go.dev/github.com/experimental-gains/hfaudit): generated Go API docs
 
+## Related
+- [slopcheck](https://github.com/experimental-gains/slopcheck): same check, PyPI/npm dependency names
+- [modslop](https://github.com/experimental-gains/modslop): same check, Go module paths in go.mod
+- [goproxycheck](https://github.com/experimental-gains/goproxycheck): diagnoses Go module proxy/sumdb fetch failures
+- [goprivaudit](https://github.com/experimental-gains/goprivaudit): audits GOPRIVATE/GONOSUMDB config for sumdb leaks
+
 ## Repo
 - [Source](https://github.com/experimental-gains/hfaudit): MIT-licensed, zero dependencies

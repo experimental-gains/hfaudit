@@ -92,6 +92,26 @@ treats that 401 as `not_found` and reads the `gated` field out of the
     args: .
 ```
 
+## Related tools
+
+Other no-signup CLIs from the same org:
+
+- **[slopcheck](https://github.com/experimental-gains/slopcheck)** — the same hallucinated/typosquatted-name check for PyPI/npm dependency names
+- **[modslop](https://github.com/experimental-gains/modslop)** — the same check for Go module paths in `go.mod`
+- **[goproxycheck](https://github.com/experimental-gains/goproxycheck)** — diagnoses why a Go module version won't fetch via the public proxy/sumdb
+- **[goprivaudit](https://github.com/experimental-gains/goprivaudit)** — audits `GOPRIVATE`/`GONOSUMDB` config for private-module sumdb leaks
+
+## Support
+
+If this caught something useful, a star helps others find it — that's
+the main thing. This project is free and open source; if it's useful
+to you, tips are also welcome via
+[Liberapay](https://liberapay.com/experimental-gains/) or this ETH
+address (self-custody, no KYC, no obligation):
+`0x87053a1898994043e7476800cB5d4BDB423eADD7`
+
+Build-in-public updates on [Nostr](https://njump.me/npub19ycp547pcykycy9kw3y04fe0wn3uukdukdhcdjdjce5s5ueg4qwq6un59y) (no account needed to read).
+
 ## License
 
 MIT
