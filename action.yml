@@ -1,0 +1,30 @@
+name: 'hfaudit'
+description: 'Flag hallucinated or typosquatted Hugging Face model/dataset IDs in Python source'
+author: 'experimental-gains'
+inputs:
+  args:
+    description: 'Arguments to pass to hfaudit (e.g. a path, --fail-on, --json)'
+    required: false
+    default: '.'
+  version:
+    description: 'hfaudit version to install'
+    required: false
+    default: 'latest'
+runs:
+  using: 'composite'
+  steps:
+    - name: Install hfaudit
+      shell: bash
+      env:
+        HFAUDIT_VERSION: ${{ inputs.version }}
+      run: |
+        go install "github.com/experimental-gains/hfaudit@${HFAUDIT_VERSION}"
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+    - name: Run hfaudit
+      shell: bash
+      env:
+        HFAUDIT_ARGS: ${{ inputs.args }}
+      run: hfaudit ${HFAUDIT_ARGS}
+branding:
+  icon: 'search'
+  color: 'blue'

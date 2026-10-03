@@ -1,0 +1,102 @@
+package main
+
+import "strings"
+
+// popularOrgs is a curated list of Hugging Face Hub namespaces popular
+// enough that an attacker impersonating one, or an LLM hallucinating a
+// near-miss of one, is worth flagging. Lowercase; Hub namespaces are
+// case-sensitive on the Hub itself but attackers (and LLMs) routinely vary
+// case, so comparison below is case-insensitive.
+var popularOrgs = []string{
+	"openai", "google", "meta-llama", "facebook", "microsoft",
+	"stabilityai", "mistralai", "qwen", "deepseek-ai", "nvidia",
+	"huggingface", "huggingfaceh4", "bigscience", "eleutherai",
+	"togethercomputer", "thebloke", "sentence-transformers",
+	"laion", "runwayml", "black-forest-labs", "anthropic", "xai-org",
+	"ai21labs", "cohere", "databricks", "salesforce", "ibm",
+	"allenai", "bigcode", "codellama", "unsloth", "unitary",
+	"intfloat", "baai", "openbmb", "internlm", "01-ai",
+}
+
+// typosquatMatch names the popular org a given namespace is suspiciously
+// close to, and how close (edit distance between the two namespaces).
+type typosquatMatch struct {
+	Target   string `json:"target"`
+	Distance int    `json:"distance"`
+}
+
+// closestPopularOrg returns the nearest popularOrgs entry to id's namespace
+// segment, if it's close enough to be worth flagging: distance 0 would be
+// an exact match (not a typosquat, just that org's own repo) so this only
+// ever returns a match for distance 1 or 2 — one or two edits away from a
+// name an attacker or a hallucinating LLM could easily have landed on
+// instead of the real thing, but not so loose it flags unrelated short
+// names. Returns nil if no popular org is within that range.
+func closestPopularOrg(id string) *typosquatMatch {
+	namespace, _, ok := strings.Cut(id, "/")
+	if !ok {
+		return nil
+	}
+	ns := strings.ToLower(namespace)
+
+	best := -1
+	bestOrg := ""
+	for _, org := range popularOrgs {
+		if ns == org {
+			return nil
+		}
+		// Cap how many edits still count as "suspiciously close" relative
+		// to the org name's own length: for a 4-letter org like "qwen",
+		// distance 2 is half the string and matches too much to be a
+		// meaningful signal, so short names get a tighter cap than long
+		// ones like "sentence-transformers".
+		maxDist := 2
+		if len(org) <= 5 {
+			maxDist = 1
+		}
+		d := levenshtein(ns, org)
+		if d >= 1 && d <= maxDist && (best == -1 || d < best) {
+			best = d
+			bestOrg = org
+		}
+	}
+	if best >= 1 {
+		return &typosquatMatch{Target: bestOrg, Distance: best}
+	}
+	return nil
+}
+
+// levenshtein returns the classic edit distance between a and b.
+func levenshtein(a, b string) int {
+	if a == b {
+		return 0
+	}
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	cur := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			del := prev[j] + 1
+			ins := cur[j-1] + 1
+			sub := prev[j-1] + cost
+			m := del
+			if ins < m {
+				m = ins
+			}
+			if sub < m {
+				m = sub
+			}
+			cur[j] = m
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(rb)]
+}

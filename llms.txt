@@ -1,0 +1,22 @@
+# hfaudit
+
+> CLI that scans Python source for Hugging Face Hub model/dataset IDs (from_pretrained, pipeline, load_dataset, hf_hub_download, snapshot_download) and checks each one against the public Hub API, flagging IDs that don't exist and namespaces suspiciously close to a well-known org.
+
+Use this when code loads a model or dataset by ID from the Hugging
+Face Hub — directly, or via an AI coding assistant's suggestion — and
+you want to confirm the ID is real before running it. An LLM can
+hallucinate a plausible-looking Hub ID the same way it hallucinates a
+PyPI/npm package name; an attacker can register the hallucinated name,
+or a name one edit away from a popular org, ahead of time. hfaudit
+makes a live, unauthenticated call to the Hub's public metadata API
+per ID, so it reports a real existence check, not a guess.
+
+## Install
+- [go install](https://github.com/experimental-gains/hfaudit#install): `go install github.com/experimental-gains/hfaudit@latest` (no registry signup, works with a plain `go install`)
+
+## Docs
+- [README](https://github.com/experimental-gains/hfaudit/blob/main/README.md): full status list, exit codes, and example output
+- [pkg.go.dev](https://pkg.go.dev/github.com/experimental-gains/hfaudit): generated Go API docs
+
+## Repo
+- [Source](https://github.com/experimental-gains/hfaudit): MIT-licensed, zero dependencies
