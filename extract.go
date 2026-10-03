@@ -51,6 +51,22 @@ var hfHubDownloadCallPattern = regexp.MustCompile(`\b(?:hf_hub_download|snapshot
 
 var repoIDArgPattern = regexp.MustCompile(`\brepo_id\s*=\s*["'](` + idPattern + `)["']`)
 
+// positionalRepoIDArgPattern matches repo_id passed positionally rather than
+// as a repo_id= keyword. repo_id is hf_hub_download's and snapshot_download's
+// first parameter and is positional-or-keyword (declared before the `*` that
+// starts the keyword-only section), and huggingface_hub's own docstrings
+// call it that way: `hf_hub_download("openai-community/gpt2", "config.json",
+// revision=revision)` (huggingface_hub/hf_api.py) and
+// `hf_hub_download('bert-base-cased', 'config.json', ...)`
+// (huggingface_hub/errors.py) — this is routine, documented usage, not an
+// obscure corner. Python syntax requires positional arguments to precede any
+// keyword arguments in a call, so a positional repo_id, when present, is
+// always the first token in the argument list; anchoring to the start of
+// the captured args blob (which begins right after the call's own open
+// paren) finds it without also matching a quoted string that belongs to a
+// later keyword argument.
+var positionalRepoIDArgPattern = regexp.MustCompile(`^\s*["'](` + idPattern + `)["']`)
+
 // repoTypeArgPattern matches the repo_type= keyword argument. The same ID
 // string can be a real model under one kind and nonexistent under another,
 // so getting this wrong means checking the wrong Hub endpoint entirely: a
@@ -84,6 +100,9 @@ func extractReferences(text, label string) []repoRef {
 	for _, m := range hfHubDownloadCallPattern.FindAllStringSubmatchIndex(text, -1) {
 		args := text[m[2]:m[3]]
 		idm := repoIDArgPattern.FindStringSubmatch(args)
+		if idm == nil {
+			idm = positionalRepoIDArgPattern.FindStringSubmatch(args)
+		}
 		if idm == nil {
 			continue
 		}

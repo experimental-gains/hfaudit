@@ -27,6 +27,13 @@ clf3 = pipeline(
     "text-generation",
     model="tiiuae/falcon-7b",
 )
+pos = hf_hub_download("openai-community/gpt2", "config.json")
+possnap = snapshot_download("distilbert/distilgpt2")
+posmulti = hf_hub_download(
+    "bert-base-multilingual-cased/variant",
+    "config.json",
+)
+posdataset = hf_hub_download("allenai/c4-positional", "README.md", repo_type="dataset")
 `
 	refs := extractReferences(src, "sample.py")
 
@@ -43,6 +50,10 @@ clf3 = pipeline(
 		"huggingfaceh4/no_robots":                                    kindDataset,
 		"facebook/bart-large":                                        kindModel,
 		"tiiuae/falcon-7b":                                           kindModel,
+		"openai-community/gpt2":                                      kindModel,
+		"distilbert/distilgpt2":                                      kindModel,
+		"bert-base-multilingual-cased/variant":                       kindModel,
+		"allenai/c4-positional":                                      kindDataset,
 	}
 
 	got := map[string]repoKind{}
@@ -67,6 +78,58 @@ clf3 = pipeline(
 		if _, ok := want[id]; !ok {
 			t.Errorf("unexpected extra ref %q (e.g. local path or bare name wrongly matched)", id)
 		}
+	}
+}
+
+// TestExtractReferencesPositionalRepoID guards the fix for a false negative
+// where hf_hub_download/snapshot_download calls using repo_id positionally
+// (rather than as a repo_id= keyword) went completely undetected. repo_id is
+// declared before the `*` that starts the keyword-only section in both
+// functions' real signatures, so it's positional-or-keyword, and
+// huggingface_hub's own docstrings call it that way — e.g.
+// `hf_hub_download("openai-community/gpt2", "config.json", revision=revision)`
+// in huggingface_hub/hf_api.py and `hf_hub_download('bert-base-cased',
+// 'config.json', ...)` in huggingface_hub/errors.py. A hallucinated or
+// typosquatted ID passed this way used to be silently skipped — "no
+// references found" — rather than flagged.
+func TestExtractReferencesPositionalRepoID(t *testing.T) {
+	src := `cfg = hf_hub_download("0penai/this-definitely-does-not-exist-xyz", "config.json")
+snap = snapshot_download("stanfordnlp/imdb-but-typo-xyz")
+ds = hf_hub_download("allenai/c4-but-positional", "README.md", repo_type="dataset")
+
+# a keyword-only first argument must NOT be mistaken for a positional
+# repo_id just because it's followed by a quoted string later in the call
+notrepo = hf_hub_download(filename="config.json", repo_id="allenai/c4")
+`
+	refs := extractReferences(src, "sample.py")
+
+	want := map[string]repoKind{
+		"0penai/this-definitely-does-not-exist-xyz": kindModel,
+		"stanfordnlp/imdb-but-typo-xyz":             kindModel,
+		"allenai/c4-but-positional":                 kindDataset,
+		"allenai/c4":                                kindModel,
+	}
+	got := map[string]repoKind{}
+	for _, r := range refs {
+		got[r.id] = r.kind
+	}
+	for id, kind := range want {
+		gotKind, ok := got[id]
+		if !ok {
+			t.Errorf("expected to find positional ref %q, didn't", id)
+			continue
+		}
+		if gotKind != kind {
+			t.Errorf("ref %q: got kind %q, want %q", id, gotKind, kind)
+		}
+	}
+	for id := range got {
+		if _, ok := want[id]; !ok {
+			t.Errorf("unexpected extra ref %q", id)
+		}
+	}
+	if _, ok := got["config.json"]; ok {
+		t.Errorf("filename keyword value was wrongly extracted as a repo_id")
 	}
 }
 
