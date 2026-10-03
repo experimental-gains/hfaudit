@@ -102,7 +102,7 @@ reference that isn't a hallucination at all.
 ## CI
 
 ```yaml
-- uses: experimental-gains/hfaudit@v0.1.2
+- uses: experimental-gains/hfaudit@v0.1.3
   with:
     args: .
 ```
