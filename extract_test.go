@@ -16,6 +16,14 @@ p = hf_hub_download(repo_id="runwayml/stable-diffusion-v1-5", filename="config.j
 snap = snapshot_download(repo_id="black-forest-labs/FLUX.1-dev")
 local = AutoModel.from_pretrained("./local-dir")
 nocheck = AutoModel.from_pretrained("bert-base-uncased")
+wrapped = AutoModel.from_pretrained(
+    "facebook/bart-large",
+    trust_remote_code=True,
+)
+clf3 = pipeline(
+    "text-generation",
+    model="tiiuae/falcon-7b",
+)
 `
 	refs := extractReferences(src, "sample.py")
 
@@ -27,6 +35,8 @@ nocheck = AutoModel.from_pretrained("bert-base-uncased")
 		"stanfordnlp/imdb":                                           kindDataset,
 		"runwayml/stable-diffusion-v1-5":                             kindModel,
 		"black-forest-labs/FLUX.1-dev":                               kindModel,
+		"facebook/bart-large":                                        kindModel,
+		"tiiuae/falcon-7b":                                           kindModel,
 	}
 
 	got := map[string]repoKind{}

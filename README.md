@@ -87,7 +87,7 @@ treats that 401 as `not_found` and reads the `gated` field out of the
 ## CI
 
 ```yaml
-- uses: experimental-gains/hfaudit@v0.1.0
+- uses: experimental-gains/hfaudit@v0.1.1
   with:
     args: .
 ```

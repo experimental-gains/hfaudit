@@ -43,18 +43,24 @@ var extractPatterns = []struct {
 
 // extractReferences scans source text for Hugging Face Hub references and
 // reports each match's 1-based line number via "label:line" in source.
+//
+// Matching runs against the whole text rather than line-by-line: real-world
+// calls are routinely wrapped across multiple lines (black/ruff formatting,
+// or just extra kwargs like trust_remote_code=True), putting the opening
+// "from_pretrained(" and the quoted ID on different lines. Per-line matching
+// would silently miss every one of those — a false negative in a tool whose
+// entire job is catching bad IDs.
 func extractReferences(text, label string) []repoRef {
 	var refs []repoRef
-	lines := strings.Split(text, "\n")
-	for lineNum, line := range lines {
-		for _, p := range extractPatterns {
-			for _, m := range p.re.FindAllStringSubmatch(line, -1) {
-				refs = append(refs, repoRef{
-					id:     m[1],
-					kind:   p.kind,
-					source: fmt.Sprintf("%s:%d", label, lineNum+1),
-				})
-			}
+	for _, p := range extractPatterns {
+		for _, m := range p.re.FindAllStringSubmatchIndex(text, -1) {
+			id := text[m[2]:m[3]]
+			line := 1 + strings.Count(text[:m[0]], "\n")
+			refs = append(refs, repoRef{
+				id:     id,
+				kind:   p.kind,
+				source: fmt.Sprintf("%s:%d", label, line),
+			})
 		}
 	}
 	return refs
