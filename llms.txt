@@ -8,8 +8,12 @@ you want to confirm the ID is real before running it. An LLM can
 hallucinate a plausible-looking Hub ID the same way it hallucinates a
 PyPI/npm package name; an attacker can register the hallucinated name,
 or a name one edit away from a popular org, ahead of time. hfaudit
-makes a live, unauthenticated call to the Hub's public metadata API
-per ID, so it reports a real existence check, not a guess.
+makes a live call to the Hub's public metadata API per ID, so it
+reports a real existence check, not a guess. No account or token is
+required, but if HF_TOKEN (or the legacy HUGGING_FACE_HUB_TOKEN) is
+set, hfaudit sends it too, matching huggingface_hub's own default
+behavior — so a legitimate private repo reference isn't misreported
+as not_found alongside genuine hallucinations.
 
 ## Install
 - [go install](https://github.com/experimental-gains/hfaudit#install): `go install github.com/experimental-gains/hfaudit@latest` (no registry signup, works with a plain `go install`)

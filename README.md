@@ -14,7 +14,12 @@ whether the *name* itself is real, or whether it's suspiciously close
 to a well-known org — the same gap `slopcheck` closes for PyPI/npm.
 
 hfaudit scans Python source for Hub references and checks each one
-against the Hub's public, unauthenticated metadata API:
+against the Hub's public metadata API — no account or token is
+required to use hfaudit itself, but if `HF_TOKEN` (or the legacy
+`HUGGING_FACE_HUB_TOKEN`) is set in the environment, exactly as
+`huggingface_hub` reads it, hfaudit authenticates with it too, so a
+legitimate private repo the audited code can actually load isn't
+misreported as `not_found` next to genuine hallucinations:
 
 - **not_found** — no such repo. Either a typo, or a name an LLM
   hallucinated outright. Worth a hard look before running the code.
@@ -70,24 +75,34 @@ readable output, or `-fail-on none` to only report, never fail.
 -fail-on not_found,typosquat,gated,error   # any comma-separated subset, or "none"
 ```
 
-## Why an unauthenticated API call is enough
+## Why hfaudit mirrors your HF_TOKEN instead of ignoring it
 
 The Hub's `/api/models/{id}` and `/api/datasets/{id}` endpoints
 answer anonymously: a real public repo returns full metadata with
 HTTP 200 — including gated ones, like `meta-llama/Llama-2-7b`, since
 gating restricts downloading files, not reading metadata. A missing
-namespace, a missing repo name under a real namespace, and (almost
-certainly) a private repo you can't see all answer identically with
+namespace, a missing repo name under a real namespace, and a private
+repo an anonymous caller can't see all answer identically with
 HTTP 401 and `{"error":"Invalid username or password."}` — an
 auth-shaped error that in practice just means "nothing here,
 anonymously." There's no separate 404 for this endpoint. hfaudit
 treats that 401 as `not_found` and reads the `gated` field out of the
 200 body instead of inferring it from the HTTP status.
 
+That ambiguity is exactly why hfaudit reads `HF_TOKEN`/
+`HUGGING_FACE_HUB_TOKEN`: `huggingface_hub` sends that token on every
+request by default (unless `HF_HUB_DISABLE_IMPLICIT_TOKEN` is set),
+so the real `from_pretrained()`/`hf_hub_download()`/`load_dataset()`
+call this tool's findings describe can already see private repos the
+token has access to. Run hfaudit in the same environment as the real
+code (the same CI job, the same shell) and it reports what that code
+would actually see — `ok`, not `not_found` — for a private repo
+reference that isn't a hallucination at all.
+
 ## CI
 
 ```yaml
-- uses: experimental-gains/hfaudit@v0.1.1
+- uses: experimental-gains/hfaudit@v0.1.2
   with:
     args: .
 ```
