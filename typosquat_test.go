@@ -17,6 +17,19 @@ func TestClosestPopularOrg(t *testing.T) {
 		{"qwxx/fake", true, "", 0},                                                   // short org: distance 2 from "qwen" must NOT be flagged
 		{"some-random-independent-group/my-model", true, "", 0},                      // unrelated namespace, no popular org nearby
 		{"sentence-transformer/all-MiniLM-L6-v2", false, "sentence-transformers", 1}, // long org, missing one char
+		// Real, independently-legitimate orgs that land within edit distance
+		// of a popularOrgs entry by coincidence (or shared lineage), not
+		// impersonation — confirmed live against huggingface.co and found by
+		// running hfaudit against real transformers/diffusers/accelerate/
+		// sentence-transformers source: without the knownLegitimateOrgs
+		// exemption, each of these false-flagged a real, heavily-used repo
+		// (e.g. FacebookAI/roberta-base, 7.8M+ downloads) as a possible
+		// typosquat, which fails the build by default since "typosquat" is
+		// in -fail-on's default set.
+		{"FacebookAI/roberta-base", true, "", 0},   // HF's own org for Facebook's historical pre-Hub checkpoints
+		{"HuggingFaceM4/idefics-9b", true, "", 0},  // Hugging Face's own multimodal team
+		{"HuggingFaceTB/SmolLM-360M", true, "", 0}, // Hugging Face's own "Smol Models" team
+		{"zai-org/GLM-Image", true, "", 0},         // Z.ai/Zhipu AI's real org, unrelated to xAI
 	}
 	for _, c := range cases {
 		got := closestPopularOrg(c.id)

@@ -25,6 +25,42 @@ type typosquatMatch struct {
 	Distance int    `json:"distance"`
 }
 
+// knownLegitimateOrgs lists real, actively-used Hub namespaces that happen
+// to land within closestPopularOrg's edit-distance threshold of a
+// popularOrgs entry, but aren't impersonations — each is itself a
+// substantial, independently-real organization, confirmed live against
+// /api/organizations/{name}/overview:
+//
+//   - "facebookai" (distance 2 from "facebook") — the transformers team's
+//     own org "maintained by the transformers team at Hugging Face" for
+//     Facebook's historical pre-Hub checkpoints (RoBERTa, XLM, XLM-RoBERTa);
+//     RoBERTa-base alone has 7.8M+ downloads.
+//   - "huggingfacem4" and "huggingfacetb" (distance 1 and 2 from
+//     "huggingfaceh4" and "huggingface") — Hugging Face's own internal
+//     teams (multimodal, and the "Smol Models Research" group), team-plan
+//     orgs with dozens of models/datasets each.
+//   - "zai-org" (distance 1 from "xai-org") — Z.ai/Zhipu AI's real org
+//     (154 models, 2179 followers, the GLM model family's publisher), an
+//     entirely different company from xAI that happens to be one edit
+//     away from "xai-org" by coincidence, not imitation.
+//
+// Found by running hfaudit against the real transformers, diffusers, peft,
+// accelerate, and sentence-transformers library source (not synthetic
+// examples): every one of these namespaces triggered a false "possible
+// typosquat" flag on an extremely popular, legitimate repo — e.g.
+// FacebookAI/roberta-base, HuggingFaceTB/SmolLM-360M, zai-org/GLM-Image —
+// across five unrelated real codebases, not a one-off. Since hfaudit's
+// default -fail-on includes "typosquat", any project merely referencing
+// RoBERTa, XLM-RoBERTa, IDEFICS, SmolLM/SmolVLM, or GLM models would fail
+// its build on these false positives. Lowercase; compared case-
+// insensitively like popularOrgs itself.
+var knownLegitimateOrgs = map[string]bool{
+	"facebookai":    true,
+	"huggingfacem4": true,
+	"huggingfacetb": true,
+	"zai-org":       true,
+}
+
 // closestPopularOrg returns the nearest popularOrgs entry to id's namespace
 // segment, if it's close enough to be worth flagging: distance 0 would be
 // an exact match (not a typosquat, just that org's own repo) so this only
@@ -38,6 +74,9 @@ func closestPopularOrg(id string) *typosquatMatch {
 		return nil
 	}
 	ns := strings.ToLower(namespace)
+	if knownLegitimateOrgs[ns] {
+		return nil
+	}
 
 	best := -1
 	bestOrg := ""
