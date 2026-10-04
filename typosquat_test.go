@@ -30,6 +30,7 @@ func TestClosestPopularOrg(t *testing.T) {
 		{"HuggingFaceM4/idefics-9b", true, "", 0},  // Hugging Face's own multimodal team
 		{"HuggingFaceTB/SmolLM-360M", true, "", 0}, // Hugging Face's own "Smol Models" team
 		{"zai-org/GLM-Image", true, "", 0},         // Z.ai/Zhipu AI's real org, unrelated to xAI
+		{"HuggingFaceFW/finewiki", true, "", 0},    // Hugging Face's own "FineData"/science team, publisher of FineWeb
 	}
 	for _, c := range cases {
 		got := closestPopularOrg(c.id)

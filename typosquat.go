@@ -43,21 +43,27 @@ type typosquatMatch struct {
 //     (154 models, 2179 followers, the GLM model family's publisher), an
 //     entirely different company from xAI that happens to be one edit
 //     away from "xai-org" by coincidence, not imitation.
+//   - "huggingfacefw" (distance 2 from "huggingface") — Hugging Face's own
+//     "FineData"/science team org (105 models, 35 datasets, 1864
+//     followers), publisher of the FineWeb/FineWeb-Edu/finewiki datasets.
 //
 // Found by running hfaudit against the real transformers, diffusers, peft,
 // accelerate, and sentence-transformers library source (not synthetic
 // examples): every one of these namespaces triggered a false "possible
 // typosquat" flag on an extremely popular, legitimate repo — e.g.
-// FacebookAI/roberta-base, HuggingFaceTB/SmolLM-360M, zai-org/GLM-Image —
-// across five unrelated real codebases, not a one-off. Since hfaudit's
-// default -fail-on includes "typosquat", any project merely referencing
-// RoBERTa, XLM-RoBERTa, IDEFICS, SmolLM/SmolVLM, or GLM models would fail
-// its build on these false positives. Lowercase; compared case-
+// FacebookAI/roberta-base, HuggingFaceTB/SmolLM-360M, zai-org/GLM-Image,
+// HuggingFaceFW/finewiki — across six unrelated real codebases, not a
+// one-off (the last found separately, in peft's own
+// method_comparison/MetaMathQA/data.py). Since hfaudit's default -fail-on
+// includes "typosquat", any project merely referencing RoBERTa,
+// XLM-RoBERTa, IDEFICS, SmolLM/SmolVLM, GLM, or FineWeb-family data would
+// fail its build on these false positives. Lowercase; compared case-
 // insensitively like popularOrgs itself.
 var knownLegitimateOrgs = map[string]bool{
 	"facebookai":    true,
 	"huggingfacem4": true,
 	"huggingfacetb": true,
+	"huggingfacefw": true,
 	"zai-org":       true,
 }
 
