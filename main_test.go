@@ -79,6 +79,60 @@ func TestRunGatedFailOn(t *testing.T) {
 	}
 }
 
+// TestRunSameIDModelAndDataset guards the fix for a false negative where a
+// model reference and a dataset reference sharing the exact same "org/name"
+// string collapsed into a single finding, silently dropping whichever kind
+// lost the collision. The Hub's model and dataset namespaces are
+// independent, so the same ID string can be a real dataset (e.g.
+// "allenai/c4", confirmed 200 from /api/datasets/) while not existing as a
+// model at all (confirmed 401/not_found from /api/models/) — a hallucinated
+// AutoModel.from_pretrained("allenai/c4") sitting next to a legitimate
+// load_dataset("allenai/c4") in the same file used to be reported as one
+// "ok dataset" finding with no sign the model call would fail at runtime.
+func TestRunSameIDModelAndDataset(t *testing.T) {
+	// fakeHFClient.check ignores kind (it only keys on id), so it can't
+	// distinguish "allenai/c4 as a model" from "allenai/c4 as a dataset" —
+	// exactly the distinction this test needs to verify. Use a kind-aware
+	// client instead.
+	kindAware := &kindAwareFakeClient{
+		model:   checkResult{status: "not_found"},
+		dataset: checkResult{status: "ok"},
+	}
+
+	var stdout, stderr bytes.Buffer
+	src := "model = AutoModel.from_pretrained(\"allenai/c4\")\n" +
+		"ds = load_dataset(\"allenai/c4\")\n"
+	code := run([]string{"-fail-on", "not_found"}, strings.NewReader(src), &stdout, &stderr, kindAware)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 (the model reference is not_found)", code)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "not_found model   allenai/c4") {
+		t.Errorf("stdout missing the not_found model finding, got:\n%s", out)
+	}
+	if !strings.Contains(out, "ok        dataset allenai/c4") {
+		t.Errorf("stdout missing the ok dataset finding, got:\n%s", out)
+	}
+	if strings.Count(out, "allenai/c4") != 2 {
+		t.Errorf("want exactly 2 lines mentioning allenai/c4 (one model, one dataset), got:\n%s", out)
+	}
+}
+
+// kindAwareFakeClient returns a fixed result per repoKind, regardless of ID
+// — just enough to prove that main's dedup logic checks model and dataset
+// references separately rather than collapsing them by ID alone.
+type kindAwareFakeClient struct {
+	model   checkResult
+	dataset checkResult
+}
+
+func (k *kindAwareFakeClient) check(id string, kind repoKind) checkResult {
+	if kind == kindDataset {
+		return k.dataset
+	}
+	return k.model
+}
+
 func TestRunNoReferencesFound(t *testing.T) {
 	client := &fakeHFClient{results: map[string]checkResult{}}
 	var stdout, stderr bytes.Buffer

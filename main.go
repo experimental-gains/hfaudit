@@ -62,11 +62,24 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, client hfClie
 		return 2
 	}
 
-	refs := map[string]repoRef{}
+	// refs is keyed by (id, kind), not just id: the Hub's model and dataset
+	// namespaces are independent, so the exact same "org/name" string can
+	// legitimately be a real dataset and, separately, a nonexistent (or
+	// hallucinated) model — e.g. "allenai/c4" is a real dataset (200 from
+	// /api/datasets/) but returns 401/not_found from /api/models/. Keying
+	// by id alone used to collapse both references into one finding
+	// (whichever kind was seen "preferred" — dataset over model — on
+	// collision), silently dropping the other kind's check entirely: a
+	// hallucinated model reference sharing a real dataset's name was
+	// reported as a single "ok dataset" finding with no sign the model
+	// call would actually fail at runtime.
+	type refKey struct {
+		id   string
+		kind repoKind
+	}
+	refs := map[refKey]repoRef{}
 	addRef := func(r repoRef) {
-		if existing, ok := refs[r.id]; !ok || (existing.kind != kindDataset && r.kind == kindDataset) {
-			refs[r.id] = r
-		}
+		refs[refKey{id: r.id, kind: r.kind}] = r
 	}
 
 	for _, id := range ids {
@@ -116,7 +129,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, client hfClie
 	fail := parseFailOn(*failOn)
 	findings := make([]finding, 0, len(refs))
 	exitCode := 0
-	for id, r := range refs {
+	for key, r := range refs {
+		id := key.id
 		res := client.check(id, r.kind)
 		f := finding{ID: id, Kind: r.kind, Status: res.status, Gated: res.gated, Source: r.source}
 		f.Typosquat = closestPopularOrg(id)
@@ -125,7 +139,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, client hfClie
 			exitCode = 1
 		}
 	}
-	sort.Slice(findings, func(i, j int) bool { return findings[i].ID < findings[j].ID })
+	sort.Slice(findings, func(i, j int) bool {
+		if findings[i].ID != findings[j].ID {
+			return findings[i].ID < findings[j].ID
+		}
+		return findings[i].Kind < findings[j].Kind
+	})
 
 	if *jsonOut {
 		enc := json.NewEncoder(stdout)
