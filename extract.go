@@ -85,10 +85,11 @@ var repoTypeArgPattern = regexp.MustCompile(`\brepo_type\s*=\s*["'](\w+)["']`)
 // would silently miss every one of those — a false negative in a tool whose
 // entire job is catching bad IDs.
 //
-// Python "#" comments are stripped first (for .py text; .ipynb files store
-// source as JSON-escaped strings where a bare "#" doesn't delimit a real
-// line, so they're left alone — see stripPythonComments). Commented-out
-// calls are routine in real ML code — e.g. diffusers' own
+// Python "#" comments and triple-quoted docstring bodies are stripped first
+// (for .py text; .ipynb files store source as JSON-escaped strings where a
+// bare "#" doesn't delimit a real line and docstrings aren't a distinct
+// syntactic form, so they're left alone — see stripDeadPythonText).
+// Commented-out calls are routine in real ML code — e.g. diffusers' own
 // pipelines/stable_diffusion/convert_from_ckpt.py keeps a superseded
 // from_pretrained call around as a comment while iterating on the
 // replacement — and the whole point of this tool is flagging IDs the real
@@ -96,9 +97,22 @@ var repoTypeArgPattern = regexp.MustCompile(`\brepo_type\s*=\s*["'](\w+)["']`)
 // or hallucinated name left behind in a commented-out call is reported
 // exactly like a live one, a false positive this tool has no business
 // raising.
+//
+// The same reasoning applies to a docstring's "Example:" block: confirmed
+// live against transformers' own source, dozens of its per-model
+// modeling_*.py files carry a docstring Example showing
+// `FooForCausalLM.from_pretrained("meta-foo/Foo-2-7b-hf")` — a
+// cookiecutter-template placeholder checkpoint name that was never a real
+// Hub repo and, per the real API, 401s like any other nonexistent one. That
+// text sits inside a triple-quoted string; it documents how the class would
+// be used, but it's never executed as part of the program the docstring
+// belongs to, exactly like a commented-out call. Without stripping it, a
+// single popular library's placeholder-naming convention floods every
+// finding list with not_found noise and fails any build using hfaudit's
+// default -fail-on.
 func extractReferences(text, label string) []repoRef {
 	if !strings.HasSuffix(label, ".ipynb") {
-		text = stripPythonComments(text)
+		text = stripDeadPythonText(text)
 	}
 	var refs []repoRef
 	for _, p := range extractPatterns {
@@ -135,12 +149,30 @@ func extractReferences(text, label string) []repoRef {
 	return refs
 }
 
-// stripPythonComments removes Python "#"-to-end-of-line comments from text,
-// while leaving string literal contents (including anything that happens to
-// contain a "#", like an f-string or a URL) untouched, and without disturbing
-// line numbers: comment bytes are dropped but every newline byte is kept, so
+// stripDeadPythonText removes Python "#"-to-end-of-line comments and
+// triple-quoted string bodies (overwhelmingly docstrings — see below) from
+// text, while leaving ordinary single/double-quoted string literal contents
+// (including anything that happens to contain a "#", like an f-string or a
+// URL) untouched, and without disturbing line numbers: removed bytes are
+// replaced one-for-one with spaces (not deleted outright, except a "#"
+// comment's own bytes which are dropped since nothing after them on the
+// line matters), and every newline byte is kept as-is, so
 // 1+strings.Count(text[:i], "\n") against the result still lines up with the
 // original source.
+//
+// Triple-quoted strings are blanked rather than left verbatim like other
+// string literals because, unlike a short quoted argument such as
+// "facebook/bart-large", they are essentially always a function/class/
+// module docstring, and real-world docstrings routinely embed a markdown or
+// reStructuredText "Example:" code block showing illustrative, non-executed
+// calls. Confirmed live against transformers' own source: dozens of its
+// per-model modeling_*.py files carry a docstring Example with
+// `FooForCausalLM.from_pretrained("meta-foo/Foo-2-7b-hf")` — a
+// cookiecutter-template placeholder name, not a real Hub repo (401s on the
+// real API like any other nonexistent one) — left over from the model's own
+// code-generation template. That text is never executed as part of the
+// program the docstring documents, exactly like a "#" comment, so it must
+// not be extracted and checked alongside genuinely live calls.
 //
 // This is a small hand-rolled Python lexer, not a full one — it only needs
 // to track enough state (single/double/triple-quoted strings, backslash
@@ -149,7 +181,7 @@ func extractReferences(text, label string) []repoRef {
 // special handling: the prefix letters aren't quote characters, so they pass
 // through as ordinary text and the following quote starts string-tracking
 // exactly as it would unprefixed.
-func stripPythonComments(text string) string {
+func stripDeadPythonText(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))
 	n := len(text)
@@ -159,18 +191,22 @@ func stripPythonComments(text string) string {
 		if c == '"' || c == '\'' {
 			quote := c
 			if i+2 < n && text[i+1] == quote && text[i+2] == quote {
-				// Triple-quoted string: copy verbatim up to and including
-				// the matching closing triple-quote (or to EOF if it's
-				// unterminated — malformed input, just stop tracking).
-				b.WriteString(text[i : i+3])
-				i += 3
-				closer := text[i-3 : i]
-				if idx := strings.Index(text[i:], closer); idx == -1 {
-					b.WriteString(text[i:])
-					i = n
-				} else {
-					b.WriteString(text[i : i+idx+3])
-					i += idx + 3
+				// Triple-quoted string: blank the whole span (including its
+				// own quote markers) up to and including the matching
+				// closing triple-quote (or to EOF if it's unterminated —
+				// malformed input, just stop tracking), keeping newlines so
+				// line numbers for anything after it stay accurate.
+				opener := text[i : i+3]
+				end := n
+				if idx := strings.Index(text[i+3:], opener); idx != -1 {
+					end = i + 3 + idx + 3
+				}
+				for ; i < end; i++ {
+					if text[i] == '\n' {
+						b.WriteByte('\n')
+					} else {
+						b.WriteByte(' ')
+					}
 				}
 				continue
 			}

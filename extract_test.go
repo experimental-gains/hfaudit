@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestExtractReferences(t *testing.T) {
 	src := `from transformers import AutoModel, AutoTokenizer, pipeline
@@ -185,7 +188,71 @@ url = "https://example.com/model#section"
 	}
 }
 
-func TestStripPythonComments(t *testing.T) {
+// TestExtractReferencesIgnoresDocstringExamples guards the fix for a false
+// positive where a from_pretrained/load_dataset call inside a docstring's
+// illustrative "Example:" code block was extracted and audited exactly like
+// a live call. Confirmed live against transformers' own source: dozens of
+// its per-model modeling_*.py files carry a docstring Example built from a
+// code-generation template that was never filled in with a real checkpoint,
+// e.g. (modeling_llama4.py):
+//
+//	r"""
+//	Example:
+//
+//	```python
+//	>>> model = Llama4ForCausalLM.from_pretrained("meta-llama4/Llama4-2-7b-hf")
+//	```
+//	"""
+//
+// "meta-llama4/Llama4-2-7b-hf" 401s on the real Hub API like any other
+// nonexistent repo — it was never a real one — but that text is never
+// executed as part of the program the docstring documents, exactly like a
+// "#"-commented-out call. Without stripping it, scanning a library that
+// uses this common template-placeholder convention in its own docstrings
+// (transformers is not the only one) reports a flood of not_found findings
+// that have nothing to do with the project's actual runtime behavior, and
+// fails any build using hfaudit's default -fail-on.
+func TestExtractReferencesIgnoresDocstringExamples(t *testing.T) {
+	src := `class Llama4ForCausalLM:
+    def forward(self):
+        r"""
+        Example:
+
+        ` + "```python" + `
+        >>> from transformers import AutoTokenizer, Llama4ForCausalLM
+
+        >>> model = Llama4ForCausalLM.from_pretrained("meta-llama4/Llama4-2-7b-hf")
+        >>> tokenizer = AutoTokenizer.from_pretrained("meta-llama4/Llama4-2-7b-hf")
+        ` + "```" + `
+        """
+        pass
+
+
+# a live call must still be found even though a docstring example precedes it
+model = AutoModel.from_pretrained("meta-llama/still-live-xyz")
+`
+	refs := extractReferences(src, "sample.py")
+
+	want := map[string]bool{
+		"meta-llama/still-live-xyz": true,
+	}
+	got := map[string]bool{}
+	for _, r := range refs {
+		got[r.id] = true
+	}
+	for id := range want {
+		if !got[id] {
+			t.Errorf("expected to find live ref %q, didn't", id)
+		}
+	}
+	for id := range got {
+		if !want[id] {
+			t.Errorf("unexpected ref %q: should have been ignored (docstring example, not a real call)", id)
+		}
+	}
+}
+
+func TestStripDeadPythonText(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -197,15 +264,28 @@ func TestStripPythonComments(t *testing.T) {
 		{"hash in double-quoted string survives", `x = "a#b"  # real comment`, `x = "a#b"  `},
 		{"hash in single-quoted string survives", `x = 'a#b'`, `x = 'a#b'`},
 		{"escaped quote inside string doesn't end it early", `x = "a\"#b"  # c`, `x = "a\"#b"  `},
-		{"triple-quoted string with hash survives", "x = \"\"\"a # not a comment\nb\"\"\"  # real", "x = \"\"\"a # not a comment\nb\"\"\"  "},
+		// Triple-quoted content is blanked (not left verbatim, unlike an
+		// ordinary quoted string): it's almost always a docstring, and a
+		// docstring's illustrative "Example:" code is never executed as
+		// part of the program it documents — see stripDeadPythonText's own
+		// doc comment and TestExtractReferencesIgnoresDocstringExamples for
+		// the real-world case this guards (transformers' per-model
+		// docstrings showing a hallucination-shaped placeholder checkpoint
+		// name like "meta-foo/Foo-2-7b-hf"). Newlines inside the blanked
+		// span are kept so line numbers for whatever follows stay accurate.
+		{
+			"triple-quoted docstring body is blanked, newline preserved",
+			"x = \"\"\"a # not a comment\nb\"\"\"  # real",
+			"x = " + strings.Repeat(" ", 20) + "\n" + strings.Repeat(" ", 6),
+		},
 		{"backslash line continuation inside string keeps newline", "x = \"a\\\nb\"", "x = \"a\\\nb\""},
 		{"multiple lines, newlines preserved", "a = 1  # one\nb = 2  # two\n", "a = 1  \nb = 2  \n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := stripPythonComments(c.in)
+			got := stripDeadPythonText(c.in)
 			if got != c.want {
-				t.Errorf("stripPythonComments(%q) = %q, want %q", c.in, got, c.want)
+				t.Errorf("stripDeadPythonText(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
 	}
