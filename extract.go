@@ -84,7 +84,22 @@ var repoTypeArgPattern = regexp.MustCompile(`\brepo_type\s*=\s*["'](\w+)["']`)
 // "from_pretrained(" and the quoted ID on different lines. Per-line matching
 // would silently miss every one of those — a false negative in a tool whose
 // entire job is catching bad IDs.
+//
+// Python "#" comments are stripped first (for .py text; .ipynb files store
+// source as JSON-escaped strings where a bare "#" doesn't delimit a real
+// line, so they're left alone — see stripPythonComments). Commented-out
+// calls are routine in real ML code — e.g. diffusers' own
+// pipelines/stable_diffusion/convert_from_ckpt.py keeps a superseded
+// from_pretrained call around as a comment while iterating on the
+// replacement — and the whole point of this tool is flagging IDs the real
+// program will actually try to fetch, not dead code. Without this, a typo
+// or hallucinated name left behind in a commented-out call is reported
+// exactly like a live one, a false positive this tool has no business
+// raising.
 func extractReferences(text, label string) []repoRef {
+	if !strings.HasSuffix(label, ".ipynb") {
+		text = stripPythonComments(text)
+	}
 	var refs []repoRef
 	for _, p := range extractPatterns {
 		for _, m := range p.re.FindAllStringSubmatchIndex(text, -1) {
@@ -118,6 +133,83 @@ func extractReferences(text, label string) []repoRef {
 		})
 	}
 	return refs
+}
+
+// stripPythonComments removes Python "#"-to-end-of-line comments from text,
+// while leaving string literal contents (including anything that happens to
+// contain a "#", like an f-string or a URL) untouched, and without disturbing
+// line numbers: comment bytes are dropped but every newline byte is kept, so
+// 1+strings.Count(text[:i], "\n") against the result still lines up with the
+// original source.
+//
+// This is a small hand-rolled Python lexer, not a full one — it only needs
+// to track enough state (single/double/triple-quoted strings, backslash
+// escapes) to tell a real comment-starting "#" apart from one sitting inside
+// a string. String prefixes (r"...", f"...", b"...", rb"...", ...) need no
+// special handling: the prefix letters aren't quote characters, so they pass
+// through as ordinary text and the following quote starts string-tracking
+// exactly as it would unprefixed.
+func stripPythonComments(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	n := len(text)
+	i := 0
+	for i < n {
+		c := text[i]
+		if c == '"' || c == '\'' {
+			quote := c
+			if i+2 < n && text[i+1] == quote && text[i+2] == quote {
+				// Triple-quoted string: copy verbatim up to and including
+				// the matching closing triple-quote (or to EOF if it's
+				// unterminated — malformed input, just stop tracking).
+				b.WriteString(text[i : i+3])
+				i += 3
+				closer := text[i-3 : i]
+				if idx := strings.Index(text[i:], closer); idx == -1 {
+					b.WriteString(text[i:])
+					i = n
+				} else {
+					b.WriteString(text[i : i+idx+3])
+					i += idx + 3
+				}
+				continue
+			}
+			// Single-line string: copy verbatim, honoring backslash
+			// escapes (including an escaped newline, Python's explicit
+			// line-continuation inside such a string), up to the matching
+			// closing quote. An unescaped newline before the closing quote
+			// means the source is malformed (or this is actually a
+			// comment's "#" miscategorized as a quote, which can't happen
+			// since we only enter this branch on a real quote byte) — stop
+			// string-tracking at the newline rather than consuming past it.
+			b.WriteByte(c)
+			i++
+			for i < n {
+				if text[i] == '\\' && i+1 < n {
+					b.WriteByte(text[i])
+					b.WriteByte(text[i+1])
+					i += 2
+					continue
+				}
+				b.WriteByte(text[i])
+				done := text[i] == quote || text[i] == '\n'
+				i++
+				if done {
+					break
+				}
+			}
+			continue
+		}
+		if c == '#' {
+			for i < n && text[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
 }
 
 func isSourceFile(path string) bool {

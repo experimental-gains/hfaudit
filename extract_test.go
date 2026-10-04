@@ -133,6 +133,84 @@ notrepo = hf_hub_download(filename="config.json", repo_id="allenai/c4")
 	}
 }
 
+// TestExtractReferencesIgnoresComments guards the fix for a false positive
+// where a "#"-commented-out call was extracted and audited exactly like a
+// live one. Commenting out a superseded from_pretrained/hf_hub_download call
+// while iterating on its replacement is routine in real ML code — e.g.
+// diffusers' own pipelines/stable_diffusion/convert_from_ckpt.py keeps:
+//
+//	# text_model = CLIPTextModel.from_pretrained("stabilityai/stable-diffusion-2", subfolder="text_encoder")
+//	# text_model = CLIPTextModelWithProjection.from_pretrained(
+//	#    "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", projection_dim=1280
+//	# )
+//
+// A hallucinated or typosquatted name left behind in a comment like that
+// used to be reported as not_found alongside genuine live findings, even
+// though the commented-out code never runs.
+func TestExtractReferencesIgnoresComments(t *testing.T) {
+	src := `# model = AutoModel.from_pretrained("openai/typo-model-that-does-not-exist-xyz123")
+# text_model = CLIPTextModelWithProjection.from_pretrained(
+#    "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", projection_dim=1280
+# )
+
+# a live call must still be found even though a comment precedes it
+model = AutoModel.from_pretrained("meta-llama/still-live-xyz")
+
+# a trailing same-line comment must not hide a live call that precedes it
+model2 = AutoModel.from_pretrained("facebook/also-live-xyz")  # loads the base checkpoint
+
+# a "#" inside a string literal is not a comment and must not truncate
+# extraction of whatever (if anything) follows it on the same line
+url = "https://example.com/model#section"
+`
+	refs := extractReferences(src, "sample.py")
+
+	want := map[string]bool{
+		"meta-llama/still-live-xyz": true,
+		"facebook/also-live-xyz":    true,
+	}
+	got := map[string]bool{}
+	for _, r := range refs {
+		got[r.id] = true
+	}
+	for id := range want {
+		if !got[id] {
+			t.Errorf("expected to find live ref %q, didn't", id)
+		}
+	}
+	for id := range got {
+		if !want[id] {
+			t.Errorf("unexpected ref %q: should have been ignored (commented-out or not a real call)", id)
+		}
+	}
+}
+
+func TestStripPythonComments(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no comment", `x = 1`, `x = 1`},
+		{"line comment", `x = 1  # set x`, `x = 1  `},
+		{"whole-line comment", `# nothing here`, ``},
+		{"hash in double-quoted string survives", `x = "a#b"  # real comment`, `x = "a#b"  `},
+		{"hash in single-quoted string survives", `x = 'a#b'`, `x = 'a#b'`},
+		{"escaped quote inside string doesn't end it early", `x = "a\"#b"  # c`, `x = "a\"#b"  `},
+		{"triple-quoted string with hash survives", "x = \"\"\"a # not a comment\nb\"\"\"  # real", "x = \"\"\"a # not a comment\nb\"\"\"  "},
+		{"backslash line continuation inside string keeps newline", "x = \"a\\\nb\"", "x = \"a\\\nb\""},
+		{"multiple lines, newlines preserved", "a = 1  # one\nb = 2  # two\n", "a = 1  \nb = 2  \n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := stripPythonComments(c.in)
+			if got != c.want {
+				t.Errorf("stripPythonComments(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 func TestIsSourceFile(t *testing.T) {
 	cases := map[string]bool{
 		"model.py":       true,
