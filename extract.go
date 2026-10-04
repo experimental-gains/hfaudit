@@ -27,16 +27,63 @@ var extractPatterns = []struct {
 	re   *regexp.Regexp
 	kind repoKind
 }{
-	// Any `<something>.from_pretrained("org/name")` — covers AutoModel,
-	// AutoTokenizer, every task-specific Auto* class, and third-party
-	// wrappers (SentenceTransformer.from_pretrained, CLIPModel, ...).
-	{regexp.MustCompile(`\.from_pretrained\(\s*["'](` + idPattern + `)["']`), kindModel},
 	// pipeline("task", "org/name") or pipeline("task", model="org/name") —
 	// the model ID can be positional (2nd arg) or the model= keyword.
 	{regexp.MustCompile(`\bpipeline\(\s*["'][^"']*["']\s*,\s*["'](` + idPattern + `)["']`), kindModel},
 	{regexp.MustCompile(`\bpipeline\([^)]*?\bmodel\s*=\s*["'](` + idPattern + `)["']`), kindModel},
 	// load_dataset("org/name")
 	{regexp.MustCompile(`\bload_dataset\(\s*["'](` + idPattern + `)["']`), kindDataset},
+}
+
+// fromPretrainedCallPattern captures the whole argument list of a
+// `<something>.from_pretrained(...)` call — covers AutoModel, AutoTokenizer,
+// every task-specific Auto* class, and third-party wrappers
+// (SentenceTransformer.from_pretrained, CLIPModel, ...) — the same way
+// hfHubDownloadCallPattern does for hf_hub_download/snapshot_download.
+// Capturing the whole call first, rather than matching only the first
+// quoted argument directly (this pattern's previous shape), is needed
+// because a handful of from_pretrained-style classmethods accept more than
+// one Hub ID as separate leading positional arguments: the real setfit
+// library's AbsaModel.from_pretrained(model_id, polarity_model_id=None,
+// ...) takes two independent model IDs positionally (confirmed live against
+// huggingface/setfit's own tests/conftest.py, which calls it with both as
+// plain positional string literals) — see leadingPositionalIDs.
+var fromPretrainedCallPattern = regexp.MustCompile(`\.from_pretrained\(([^)]*)\)`)
+
+// leadingPositionalIDPattern matches one leading positional argument that's
+// a bare Hub-ID string literal — nothing else in its comma-delimited slot —
+// plus the comma separating it from the next positional argument, if one
+// follows. leadingPositionalIDs uses this to walk a call's argument list
+// collecting every ID passed as its own separate positional argument.
+var leadingPositionalIDPattern = regexp.MustCompile(`^\s*["'](` + idPattern + `)["']\s*(,)?`)
+
+// leadingPositionalIDs returns every Hub-ID string literal passed as a
+// separate leading positional argument in a call's argument-list text
+// (everything between its parens). Python requires positional arguments to
+// precede any keyword argument in a call, so once a comma-delimited slot
+// fails to be a bare quoted ID — because it's a keyword argument, a
+// variable, or any other expression — nothing after it can be a positional
+// ID either, and the walk stops there. Almost every from_pretrained call
+// has exactly one such argument (the common case this returns a
+// single-element slice for), but see fromPretrainedCallPattern's doc
+// comment for the real multi-ID exception this generalizes to.
+func leadingPositionalIDs(args string) []string {
+	var ids []string
+	pos := 0
+	for {
+		m := leadingPositionalIDPattern.FindStringSubmatchIndex(args[pos:])
+		if m == nil {
+			break
+		}
+		ids = append(ids, args[pos+m[2]:pos+m[3]])
+		if m[4] == -1 {
+			// No trailing comma matched: this was the last (or only)
+			// positional argument in the list.
+			break
+		}
+		pos += m[1]
+	}
+	return ids
 }
 
 // hfHubDownloadCallPattern matches an hf_hub_download(...)/snapshot_download(...)
@@ -122,6 +169,17 @@ func extractReferences(text, label string) []repoRef {
 			refs = append(refs, repoRef{
 				id:     id,
 				kind:   p.kind,
+				source: fmt.Sprintf("%s:%d", label, line),
+			})
+		}
+	}
+	for _, m := range fromPretrainedCallPattern.FindAllStringSubmatchIndex(text, -1) {
+		args := text[m[2]:m[3]]
+		line := 1 + strings.Count(text[:m[0]], "\n")
+		for _, id := range leadingPositionalIDs(args) {
+			refs = append(refs, repoRef{
+				id:     id,
+				kind:   kindModel,
 				source: fmt.Sprintf("%s:%d", label, line),
 			})
 		}

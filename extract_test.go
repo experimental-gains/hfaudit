@@ -252,6 +252,73 @@ model = AutoModel.from_pretrained("meta-llama/still-live-xyz")
 	}
 }
 
+// TestExtractReferencesSecondPositionalFromPretrainedID guards the fix for a
+// false negative where a from_pretrained call's second (and any further)
+// leading positional argument was invisible to extraction entirely. Most
+// from_pretrained-style classmethods take exactly one Hub ID, but the real
+// setfit library's AbsaModel.from_pretrained takes two independent ones as
+// separate positional parameters (model_id, then polarity_model_id) — see
+// setfit/src/setfit/span/modeling.py:
+//
+//	def from_pretrained(cls, model_id: str, polarity_model_id: Optional[str] = None, ...):
+//
+// and real-world callers (e.g. huggingface/setfit's own tests/conftest.py)
+// pass both positionally:
+//
+//	AbsaModel.from_pretrained(
+//	    "tomaarsen/setfit-absa-bge-small-en-v1.5-restaurants-aspect",
+//	    "tomaarsen/setfit-absa-bge-small-en-v1.5-restaurants-polarity",
+//	)
+//
+// Before the fix, hfaudit's from_pretrained pattern only ever captured the
+// first quoted argument immediately after the opening paren — a hallucinated
+// or typosquatted second positional ID (confirmed live: the real Hub API
+// 401s on a made-up name exactly like any other nonexistent repo) produced
+// zero findings and exit 0, completely invisible.
+func TestExtractReferencesSecondPositionalFromPretrainedID(t *testing.T) {
+	src := `from setfit import AbsaModel
+
+model = AbsaModel.from_pretrained(
+    "tomaarsen/setfit-absa-bge-small-en-v1.5-restaurants-aspect",
+    "tomaarsen/this-is-a-totally-fake-polarity-model-xyz123",
+)
+
+# a single-ID from_pretrained call must still work exactly as before
+plain = AutoModel.from_pretrained("meta-llama/still-live-xyz")
+
+# a second positional arg that ISN'T a bare quoted ID (e.g. a kwarg or a
+# variable) must not be mistaken for a second Hub ID
+single = AbsaModel.from_pretrained("tomaarsen/only-this-one-xyz", spacy_model="en_core_web_sm")
+`
+	refs := extractReferences(src, "sample.py")
+
+	want := map[string]repoKind{
+		"tomaarsen/setfit-absa-bge-small-en-v1.5-restaurants-aspect": kindModel,
+		"tomaarsen/this-is-a-totally-fake-polarity-model-xyz123":     kindModel,
+		"meta-llama/still-live-xyz":                                  kindModel,
+		"tomaarsen/only-this-one-xyz":                                kindModel,
+	}
+	got := map[string]repoKind{}
+	for _, r := range refs {
+		got[r.id] = r.kind
+	}
+	for id, kind := range want {
+		gotKind, ok := got[id]
+		if !ok {
+			t.Errorf("expected to find ref %q, didn't", id)
+			continue
+		}
+		if gotKind != kind {
+			t.Errorf("ref %q: got kind %q, want %q", id, gotKind, kind)
+		}
+	}
+	for id := range got {
+		if _, ok := want[id]; !ok {
+			t.Errorf("unexpected extra ref %q (e.g. en_core_web_sm kwarg wrongly matched)", id)
+		}
+	}
+}
+
 func TestStripDeadPythonText(t *testing.T) {
 	cases := []struct {
 		name string
