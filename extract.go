@@ -23,17 +23,32 @@ type repoRef struct {
 // Hub IDs this tool can look up.
 const idPattern = `[A-Za-z0-9][A-Za-z0-9_.\-]*/[A-Za-z0-9][A-Za-z0-9_.\-]*`
 
-var extractPatterns = []struct {
-	re   *regexp.Regexp
-	kind repoKind
-}{
-	// pipeline("task", "org/name") or pipeline("task", model="org/name") —
-	// the model ID can be positional (2nd arg) or the model= keyword.
-	{regexp.MustCompile(`\bpipeline\(\s*["'][^"']*["']\s*,\s*["'](` + idPattern + `)["']`), kindModel},
-	{regexp.MustCompile(`\bpipeline\([^)]*?\bmodel\s*=\s*["'](` + idPattern + `)["']`), kindModel},
-	// load_dataset("org/name")
-	{regexp.MustCompile(`\bload_dataset\(\s*["'](` + idPattern + `)["']`), kindDataset},
-}
+// pipelineCallPattern matches pipeline(...)'s whole argument list as one
+// blob, the same whole-call-first approach hfHubDownloadCallPattern uses for
+// hf_hub_download/snapshot_download, so the model ID — whether a quoted
+// literal or a same-file constant name (see resolveTokenID) — can be found
+// regardless of whether it's passed as pipeline's second positional
+// argument or its model= keyword.
+var pipelineCallPattern = regexp.MustCompile(`\bpipeline\(([^)]*)\)`)
+
+// pipelineTaskPrefixPattern matches pipeline's first positional argument (a
+// quoted task name, e.g. "text-classification") plus the comma separating
+// it from a second positional argument, if one follows — the model ID,
+// when passed positionally rather than as model=, is that second argument,
+// immediately after this prefix.
+var pipelineTaskPrefixPattern = regexp.MustCompile(`^\s*["'][^"']*["']\s*,\s*`)
+
+// modelKeywordPrefixPattern matches pipeline's model= keyword up to (but
+// not including) the value that follows it, wherever model= appears in the
+// call's argument list.
+var modelKeywordPrefixPattern = regexp.MustCompile(`\bmodel\s*=\s*`)
+
+// loadDatasetCallPattern matches load_dataset(...)'s whole argument list,
+// the same whole-call-first approach as pipelineCallPattern and
+// hfHubDownloadCallPattern, so its first positional argument — the dataset
+// ID — can be resolved through resolveTokenID exactly like the others,
+// rather than requiring a quoted literal directly after the open paren.
+var loadDatasetCallPattern = regexp.MustCompile(`\bload_dataset\(([^)]*)\)`)
 
 // fromPretrainedCallPattern captures the whole argument list of a
 // `<something>.from_pretrained(...)` call — covers AutoModel, AutoTokenizer,
@@ -164,16 +179,61 @@ func collectStringConstants(text string) map[string]string {
 // name through collectStringConstants' map instead of giving up on it.
 var bareIdentifierPattern = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)`)
 
+// resolveTokenID extracts a Hub-ID value from the start of s: either a
+// quoted literal (via positionalRepoIDArgPattern), or a bare identifier
+// resolved through constants (see collectStringConstants) — the same two
+// shapes leadingPositionalIDs already accepts for from_pretrained's
+// positional arguments, generalized here for every other single-argument
+// position that can equally hold either shape in real code: pipeline's
+// model= keyword and second positional argument, load_dataset's first
+// positional argument, and hf_hub_download/snapshot_download's repo_id=
+// keyword and positional argument. Before this existed, a Hub ID assigned
+// to a same-file constant and passed to any of those four call shapes
+// (rather than from_pretrained, the one shape leadingPositionalIDs already
+// covered) was invisible to extraction — confirmed live against
+// huggingface/datasets' own tests/test_load.py:
+// `SAMPLE_DATASET_IDENTIFIER3 = "hf-internal-testing/multi_dir_dataset"`
+// then `load_dataset(SAMPLE_DATASET_IDENTIFIER3)` produced zero findings.
+// Returns ok=false if s starts with neither shape — a keyword argument's
+// own name (NAME=value), an unresolvable name, or any other non-ID
+// expression — exactly the same "correctly invisible rather than guessed
+// at" rule leadingPositionalIDs already applies.
+func resolveTokenID(s string, constants map[string]string) (string, bool) {
+	if m := positionalRepoIDArgPattern.FindStringSubmatch(s); m != nil {
+		return m[1], true
+	}
+	im := bareIdentifierPattern.FindStringSubmatchIndex(s)
+	if im == nil {
+		return "", false
+	}
+	name := s[im[2]:im[3]]
+	rest := strings.TrimLeft(s[im[1]:], " \t\n")
+	if strings.HasPrefix(rest, "=") && !strings.HasPrefix(rest, "==") {
+		// name=value: this is a keyword argument, not a bare identifier
+		// value — the same "nothing here can be a positional/value ID"
+		// rule leadingPositionalIDs applies to the exact same shape.
+		return "", false
+	}
+	id, ok := constants[name]
+	return id, ok
+}
+
 // hfHubDownloadCallPattern matches an hf_hub_download(...)/snapshot_download(...)
 // call's whole argument list as one blob, rather than jumping straight to
-// repo_id= the way extractPatterns' other entries do. Both functions also
+// repo_id=, the same whole-call-first approach pipelineCallPattern and
+// loadDatasetCallPattern use. Both functions also
 // take a repo_type= keyword telling the Hub whether repo_id names a model, a
 // dataset, or a Space, and repo_type can legally appear either before or
 // after repo_id since both are keyword arguments — capturing the whole call
 // first lets repoTypeArgPattern find it regardless of order.
 var hfHubDownloadCallPattern = regexp.MustCompile(`\b(?:hf_hub_download|snapshot_download)\(([^)]*)\)`)
 
-var repoIDArgPattern = regexp.MustCompile(`\brepo_id\s*=\s*["'](` + idPattern + `)["']`)
+// repoIDKeywordPrefixPattern matches the repo_id= keyword up to (but not
+// including) the value that follows it, wherever repo_id= appears in the
+// call's argument list. resolveTokenID reads the value from there, so this
+// covers both a quoted literal (repoIDArgPattern's old job) and a same-file
+// constant name in one place.
+var repoIDKeywordPrefixPattern = regexp.MustCompile(`\brepo_id\s*=\s*`)
 
 // positionalRepoIDArgPattern matches repo_id passed positionally rather than
 // as a repo_id= keyword. repo_id is hf_hub_download's and snapshot_download's
@@ -246,16 +306,28 @@ func extractReferences(text, label string) []repoRef {
 	text = stripDeadPythonText(text)
 	constants := collectStringConstants(text)
 	var refs []repoRef
-	for _, p := range extractPatterns {
-		for _, m := range p.re.FindAllStringSubmatchIndex(text, -1) {
-			id := text[m[2]:m[3]]
-			line := 1 + strings.Count(text[:m[0]], "\n")
-			refs = append(refs, repoRef{
-				id:     id,
-				kind:   p.kind,
-				source: fmt.Sprintf("%s:%d", label, line),
-			})
+	for _, m := range pipelineCallPattern.FindAllStringSubmatchIndex(text, -1) {
+		args := text[m[2]:m[3]]
+		line := 1 + strings.Count(text[:m[0]], "\n")
+		if pm := pipelineTaskPrefixPattern.FindStringIndex(args); pm != nil {
+			if id, ok := resolveTokenID(args[pm[1]:], constants); ok {
+				refs = append(refs, repoRef{id: id, kind: kindModel, source: fmt.Sprintf("%s:%d", label, line)})
+			}
 		}
+		if km := modelKeywordPrefixPattern.FindStringIndex(args); km != nil {
+			if id, ok := resolveTokenID(args[km[1]:], constants); ok {
+				refs = append(refs, repoRef{id: id, kind: kindModel, source: fmt.Sprintf("%s:%d", label, line)})
+			}
+		}
+	}
+	for _, m := range loadDatasetCallPattern.FindAllStringSubmatchIndex(text, -1) {
+		args := text[m[2]:m[3]]
+		id, ok := resolveTokenID(args, constants)
+		if !ok {
+			continue
+		}
+		line := 1 + strings.Count(text[:m[0]], "\n")
+		refs = append(refs, repoRef{id: id, kind: kindDataset, source: fmt.Sprintf("%s:%d", label, line)})
 	}
 	for _, m := range fromPretrainedCallPattern.FindAllStringSubmatchIndex(text, -1) {
 		args := text[m[2]:m[3]]
@@ -270,11 +342,15 @@ func extractReferences(text, label string) []repoRef {
 	}
 	for _, m := range hfHubDownloadCallPattern.FindAllStringSubmatchIndex(text, -1) {
 		args := text[m[2]:m[3]]
-		idm := repoIDArgPattern.FindStringSubmatch(args)
-		if idm == nil {
-			idm = positionalRepoIDArgPattern.FindStringSubmatch(args)
+		var id string
+		var ok bool
+		if km := repoIDKeywordPrefixPattern.FindStringIndex(args); km != nil {
+			id, ok = resolveTokenID(args[km[1]:], constants)
 		}
-		if idm == nil {
+		if !ok {
+			id, ok = resolveTokenID(args, constants)
+		}
+		if !ok {
 			continue
 		}
 		kind := kindModel
@@ -288,7 +364,7 @@ func extractReferences(text, label string) []repoRef {
 		}
 		line := 1 + strings.Count(text[:m[0]], "\n")
 		refs = append(refs, repoRef{
-			id:     idm[1],
+			id:     id,
 			kind:   kind,
 			source: fmt.Sprintf("%s:%d", label, line),
 		})

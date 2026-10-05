@@ -383,6 +383,85 @@ kw = AutoModel.from_pretrained(pretrained_model_name_or_path=MODEL_ID)
 	}
 }
 
+// TestExtractReferencesResolvesSameFileConstantOtherCallShapes guards a gap
+// left behind by the fix TestExtractReferencesResolvesSameFileConstant
+// covers: same-file constant resolution (collectStringConstants) was wired
+// into leadingPositionalIDs for from_pretrained's positional arguments only.
+// pipeline's model= keyword and second positional argument, load_dataset's
+// first positional argument, and hf_hub_download/snapshot_download's
+// repo_id= keyword and positional argument all independently required a
+// quoted literal directly at the call site — a same-file constant
+// referenced through any of those four other call shapes was completely
+// invisible to extraction, exactly the same silent gap, just in four more
+// places. Confirmed live in huggingface/datasets' own tests/test_load.py:
+//
+//	SAMPLE_DATASET_IDENTIFIER3 = "hf-internal-testing/multi_dir_dataset"
+//	...
+//	dataset = load_dataset(SAMPLE_DATASET_IDENTIFIER3)
+//
+// Pre-fix, running hfaudit against that real file found only one of its
+// seven genuine Hub references (the one bare quoted literal); the other
+// six, all passed through a same-file constant, produced no finding.
+func TestExtractReferencesResolvesSameFileConstantOtherCallShapes(t *testing.T) {
+	src := `from transformers import pipeline
+from datasets import load_dataset
+from huggingface_hub import hf_hub_download, snapshot_download
+
+MODEL_KW_ID = "meta-llama/fake-pipeline-model-keyword-xyz"
+MODEL_POS_ID = "meta-llama/fake-pipeline-second-positional-xyz"
+DATASET_ID = "allenai/fake-load-dataset-constant-xyz"
+REPO_KW_ID = "meta-llama/fake-hf-hub-download-keyword-xyz"
+REPO_POS_ID = "meta-llama/fake-hf-hub-download-positional-xyz"
+SNAPSHOT_ID = "meta-llama/fake-snapshot-download-positional-xyz"
+FILENAME_ID = "meta-llama/this-is-a-filename-value-not-a-repo-id-xyz"
+
+clf = pipeline("text-classification", model=MODEL_KW_ID)
+clf2 = pipeline("text-classification", MODEL_POS_ID)
+ds = load_dataset(DATASET_ID)
+p = hf_hub_download(repo_id=REPO_KW_ID, filename="config.json")
+p2 = hf_hub_download(REPO_POS_ID, "config.json")
+snap = snapshot_download(SNAPSHOT_ID)
+
+# an unresolvable name must stay invisible, same as from_pretrained's own
+# rule — not guessed at, exactly like a config lookup or CLI argument.
+other = pipeline("text-classification", model=some_unresolvable_var)
+
+# a name that's actually a keyword argument's own name (NAME=value) must
+# never be mistaken for a bare positional identifier reference.
+notrepo = hf_hub_download(repo_id="allenai/c4", filename=FILENAME_ID)
+`
+	refs := extractReferences(src, "sample.py")
+
+	want := map[string]repoKind{
+		"meta-llama/fake-pipeline-model-keyword-xyz":       kindModel,
+		"meta-llama/fake-pipeline-second-positional-xyz":   kindModel,
+		"allenai/fake-load-dataset-constant-xyz":           kindDataset,
+		"meta-llama/fake-hf-hub-download-keyword-xyz":      kindModel,
+		"meta-llama/fake-hf-hub-download-positional-xyz":   kindModel,
+		"meta-llama/fake-snapshot-download-positional-xyz": kindModel,
+		"allenai/c4": kindModel,
+	}
+	got := map[string]repoKind{}
+	for _, r := range refs {
+		got[r.id] = r.kind
+	}
+	for id, kind := range want {
+		gotKind, ok := got[id]
+		if !ok {
+			t.Errorf("expected to find ref %q, didn't", id)
+			continue
+		}
+		if gotKind != kind {
+			t.Errorf("ref %q: got kind %q, want %q", id, gotKind, kind)
+		}
+	}
+	for id := range got {
+		if _, ok := want[id]; !ok {
+			t.Errorf("unexpected extra ref %q (e.g. an unresolvable name or a filename= value wrongly matched)", id)
+		}
+	}
+}
+
 // TestCollectStringConstants exercises collectStringConstants directly,
 // including shapes it must NOT treat as a constant assignment: anything
 // that isn't a bare literal alone on its line (an expression built from
