@@ -110,7 +110,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, client hfClie
 				fmt.Fprintln(stderr, "hfaudit:", rerr)
 				return nil
 			}
-			for _, r := range extractReferences(string(data), path) {
+			text := string(data)
+			if strings.HasSuffix(path, ".ipynb") {
+				if decoded, ok := decodeNotebookSource(data); ok {
+					text = decoded
+				}
+				// On decode failure (malformed/non-standard notebook JSON),
+				// fall through and scan the raw bytes as plain text rather
+				// than silently finding nothing.
+			}
+			for _, r := range extractReferences(text, path) {
 				addRef(r)
 			}
 			return nil

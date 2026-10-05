@@ -133,10 +133,11 @@ var repoTypeArgPattern = regexp.MustCompile(`\brepo_type\s*=\s*["'](\w+)["']`)
 // entire job is catching bad IDs.
 //
 // Python "#" comments and triple-quoted docstring bodies are stripped first
-// (for .py text; .ipynb files store source as JSON-escaped strings where a
-// bare "#" doesn't delimit a real line and docstrings aren't a distinct
-// syntactic form, so they're left alone — see stripDeadPythonText).
-// Commented-out calls are routine in real ML code — e.g. diffusers' own
+// (see stripDeadPythonText). Callers pass .ipynb files through
+// decodeNotebookSource first (see notebook.go), so by the time text reaches
+// here it's always plain decoded Python source — real code cell text, not
+// the notebook's own raw JSON — and stripping applies to it exactly as it
+// does to an ordinary .py file. Commented-out calls are routine in real ML code — e.g. diffusers' own
 // pipelines/stable_diffusion/convert_from_ckpt.py keeps a superseded
 // from_pretrained call around as a comment while iterating on the
 // replacement — and the whole point of this tool is flagging IDs the real
@@ -158,9 +159,7 @@ var repoTypeArgPattern = regexp.MustCompile(`\brepo_type\s*=\s*["'](\w+)["']`)
 // finding list with not_found noise and fails any build using hfaudit's
 // default -fail-on.
 func extractReferences(text, label string) []repoRef {
-	if !strings.HasSuffix(label, ".ipynb") {
-		text = stripDeadPythonText(text)
-	}
+	text = stripDeadPythonText(text)
 	var refs []repoRef
 	for _, p := range extractPatterns {
 		for _, m := range p.re.FindAllStringSubmatchIndex(text, -1) {

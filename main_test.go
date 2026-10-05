@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -157,6 +159,37 @@ func TestRunStdinExtraction(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "openai/clip-vit-base-patch32") {
 		t.Errorf("stdout = %q, want it to mention the extracted ID", stdout.String())
+	}
+}
+
+// TestRunNotebookFile is an end-to-end guard (real file on disk, through
+// run()'s own filepath.Walk, not just a direct decodeNotebookSource/
+// extractReferences unit call) for the fix to a bug where hfaudit scanned a
+// .ipynb file's raw JSON bytes directly: nbformat JSON-escapes every
+// double-quote in a code cell's real Python source, so a `["']`-anchored
+// match never lined up with a double-quoted Hub ID and every notebook using
+// the standard double-quote style (confirmed against setfit's own shipped
+// notebooks) silently produced zero findings.
+func TestRunNotebookFile(t *testing.T) {
+	nb := `{"cells": [` +
+		`{"cell_type": "code", "source": ["model = AutoModel.from_pretrained(\"openai/clip-vit-base-patch32\")\n"]}` +
+		`]}`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "demo.ipynb")
+	if err := os.WriteFile(path, []byte(nb), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	client := &fakeHFClient{results: map[string]checkResult{
+		"openai/clip-vit-base-patch32": {status: "ok"},
+	}}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-fail-on", "none", path}, strings.NewReader(""), &stdout, &stderr, client)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "openai/clip-vit-base-patch32") {
+		t.Errorf("stdout = %q, want it to mention the ID extracted from the notebook's double-quoted call", stdout.String())
 	}
 }
 
