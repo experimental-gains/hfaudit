@@ -323,6 +323,96 @@ single = AbsaModel.from_pretrained("tomaarsen/only-this-one-xyz", spacy_model="e
 	}
 }
 
+// TestExtractReferencesResolvesSameFileConstant guards the gap closed by
+// collectStringConstants/leadingPositionalIDs' identifier handling:
+// from_pretrained(SOME_CONSTANT), where SOME_CONSTANT is assigned a Hub-ID
+// literal earlier in the same file, used to be invisible to extraction
+// entirely (the bare name failed leadingPositionalIDPattern's quoted-literal
+// match, so the walk stopped with zero IDs found) — confirmed live in
+// accelerate's own tests/fsdp/test_fsdp.py:
+//
+//	LLAMA_TESTING = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+//	...
+//	model = AutoModel.from_pretrained(LLAMA_TESTING)
+//
+// A hallucinated or typosquatted ID assigned to a constant and referenced
+// this way produced no finding and exit 0, same as every other gap this
+// project's real-world-testing passes have closed.
+func TestExtractReferencesResolvesSameFileConstant(t *testing.T) {
+	src := `from transformers import AutoModel, AutoTokenizer
+
+MODEL_ID = "meta-llama/this-definitely-does-not-exist-xyz-123"
+TOKENIZER_ID: str = "openai/clip-vit-base-patch32"
+
+model = AutoModel.from_pretrained(MODEL_ID)
+tok = AutoTokenizer.from_pretrained(TOKENIZER_ID)
+
+# an undefined/unresolvable name must not produce a finding — it isn't a
+# simple same-file literal assignment, so it stays invisible exactly like
+# before this fix, not guessed at.
+other = AutoModel.from_pretrained(SOME_IMPORTED_CONSTANT)
+
+# a name that happens to be a keyword argument's own name (NAME=value)
+# must never be mistaken for a bare positional identifier reference.
+kw = AutoModel.from_pretrained(pretrained_model_name_or_path=MODEL_ID)
+`
+	refs := extractReferences(src, "sample.py")
+
+	want := map[string]repoKind{
+		"meta-llama/this-definitely-does-not-exist-xyz-123": kindModel,
+		"openai/clip-vit-base-patch32":                      kindModel,
+	}
+	got := map[string]repoKind{}
+	for _, r := range refs {
+		got[r.id] = r.kind
+	}
+	for id, kind := range want {
+		gotKind, ok := got[id]
+		if !ok {
+			t.Errorf("expected to find ref %q, didn't", id)
+			continue
+		}
+		if gotKind != kind {
+			t.Errorf("ref %q: got kind %q, want %q", id, gotKind, kind)
+		}
+	}
+	for id := range got {
+		if _, ok := want[id]; !ok {
+			t.Errorf("unexpected extra ref %q (e.g. an unresolvable name wrongly matched)", id)
+		}
+	}
+}
+
+// TestCollectStringConstants exercises collectStringConstants directly,
+// including shapes it must NOT treat as a constant assignment: anything
+// that isn't a bare literal alone on its line (an expression built from
+// concatenation/an f-string, or a tuple-assignment line with trailing
+// content after the literal).
+func TestCollectStringConstants(t *testing.T) {
+	src := `MODEL_ID = "org/name"
+TYPED_ID: str = "org/typed-name"
+NOT_A_CONST = "org/" + "concat"
+TUPLE_LINE = "org/tuple", "org/other"
+   INDENTED = "org/indented"
+`
+	got := collectStringConstants(stripDeadPythonText(src))
+	want := map[string]string{
+		"MODEL_ID": "org/name",
+		"TYPED_ID": "org/typed-name",
+		"INDENTED": "org/indented",
+	}
+	for name, id := range want {
+		if got[name] != id {
+			t.Errorf("collectStringConstants[%q] = %q, want %q", name, got[name], id)
+		}
+	}
+	for _, bad := range []string{"NOT_A_CONST", "TUPLE_LINE"} {
+		if _, ok := got[bad]; ok {
+			t.Errorf("collectStringConstants wrongly captured %q (not a bare literal assignment)", bad)
+		}
+	}
+}
+
 func TestStripDeadPythonText(t *testing.T) {
 	cases := []struct {
 		name string

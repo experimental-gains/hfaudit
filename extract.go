@@ -59,32 +59,110 @@ var leadingPositionalIDPattern = regexp.MustCompile(`^\s*["'](` + idPattern + `)
 
 // leadingPositionalIDs returns every Hub-ID string literal passed as a
 // separate leading positional argument in a call's argument-list text
-// (everything between its parens). Python requires positional arguments to
+// (everything between its parens), resolving a bare name in that position
+// through constants (see collectStringConstants) when it's a simple
+// same-file literal assignment. Python requires positional arguments to
 // precede any keyword argument in a call, so once a comma-delimited slot
-// fails to be a bare quoted ID — because it's a keyword argument, a
-// variable, or any other expression — nothing after it can be a positional
-// ID either, and the walk stops there. Almost every from_pretrained call
-// has exactly one such argument (the common case this returns a
-// single-element slice for), but see fromPretrainedCallPattern's doc
-// comment for the real multi-ID exception this generalizes to.
-func leadingPositionalIDs(args string) []string {
+// fails to be a bare quoted ID or a resolvable name — because it's a
+// keyword argument, an unresolvable variable, or any other expression —
+// nothing after it can be a positional ID either, and the walk stops there.
+// Almost every from_pretrained call has exactly one such argument (the
+// common case this returns a single-element slice for), but see
+// fromPretrainedCallPattern's doc comment for the real multi-ID exception
+// this generalizes to.
+func leadingPositionalIDs(args string, constants map[string]string) []string {
 	var ids []string
 	pos := 0
 	for {
-		m := leadingPositionalIDPattern.FindStringSubmatchIndex(args[pos:])
-		if m == nil {
+		rest := args[pos:]
+		if m := leadingPositionalIDPattern.FindStringSubmatchIndex(rest); m != nil {
+			ids = append(ids, rest[m[2]:m[3]])
+			if m[4] == -1 {
+				// No trailing comma matched: this was the last (or only)
+				// positional argument in the list.
+				break
+			}
+			pos += m[1]
+			continue
+		}
+
+		im := bareIdentifierPattern.FindStringSubmatchIndex(rest)
+		if im == nil {
 			break
 		}
-		ids = append(ids, args[pos+m[2]:pos+m[3]])
-		if m[4] == -1 {
-			// No trailing comma matched: this was the last (or only)
-			// positional argument in the list.
+		name := rest[im[2]:im[3]]
+		after := rest[im[1]:]
+		trimmed := strings.TrimLeft(after, " \t\n")
+		if strings.HasPrefix(trimmed, "=") && !strings.HasPrefix(trimmed, "==") {
+			// name=value: this is a keyword argument, not a bare positional
+			// name — the same "nothing after can be positional" rule as any
+			// other non-ID expression applies.
 			break
 		}
-		pos += m[1]
+		id, ok := constants[name]
+		if !ok {
+			// An unresolvable name (imported, computed, or just not a
+			// simple same-file literal) — can't be a Hub ID this tool can
+			// check, exactly like any other non-literal positional
+			// argument.
+			break
+		}
+		ids = append(ids, id)
+		if strings.HasPrefix(trimmed, ",") {
+			pos += im[1] + (len(after) - len(trimmed)) + 1
+			continue
+		}
+		break
 	}
 	return ids
 }
+
+// stringConstantPattern matches a simple same-file assignment of a Hub-ID
+// string literal to a bare name, alone on its line: NAME = "org/name", or
+// type-annotated, NAME: str = "org/name". Real training/eval scripts
+// routinely pull a Hub ID out into a named constant near the top of the
+// file and pass the name to from_pretrained(...) rather than the literal
+// itself — confirmed live in accelerate's own tests/fsdp/test_fsdp.py:
+//
+//	LLAMA_TESTING = "hf-internal-testing/tiny-random-LlamaForCausalLM"
+//	...
+//	model = AutoModel.from_pretrained(LLAMA_TESTING)
+//
+// Before collectStringConstants/leadingPositionalIDs' use of it, a bare name
+// standing in for the ID argument was indistinguishable from any other
+// non-literal expression (a config lookup, a CLI argument, ...) and the
+// call was silently skipped — a hallucinated or typosquatted ID assigned to
+// a constant and referenced this way produced zero findings and exit 0,
+// invisible exactly like the gaps closed in previous passes.
+//
+// This resolves only the simple, unambiguous one-hop case: a name defined
+// by exactly one literal assignment statement, by itself on its line.
+// Anything built from an f-string, concatenation, a function call, or
+// imported from another module is deliberately left unresolved, the same
+// as any other non-literal expression — correctly invisible rather than
+// guessed at. Matching is purely textual, not scope-aware: a name reused
+// with different values in different functions resolves to whichever
+// assignment appears last in the file, a known imprecision acceptable in a
+// regex-based tool that was never a full Python parser.
+var stringConstantPattern = regexp.MustCompile(`(?m)^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?::[^=\n]+)?=[ \t]*["'](` + idPattern + `)["'][ \t]*$`)
+
+// collectStringConstants returns every name->ID mapping stringConstantPattern
+// finds in text. Called once per extractReferences invocation (text is
+// already comment/docstring-stripped by then) and threaded through to every
+// extraction path that resolves a bare identifier positional argument.
+func collectStringConstants(text string) map[string]string {
+	consts := map[string]string{}
+	for _, m := range stringConstantPattern.FindAllStringSubmatch(text, -1) {
+		consts[m[1]] = m[2]
+	}
+	return consts
+}
+
+// bareIdentifierPattern matches a single leading Python identifier —
+// leadingPositionalIDs uses this to recognize a positional argument that's
+// a bare name rather than a quoted literal, so it can try resolving the
+// name through collectStringConstants' map instead of giving up on it.
+var bareIdentifierPattern = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)`)
 
 // hfHubDownloadCallPattern matches an hf_hub_download(...)/snapshot_download(...)
 // call's whole argument list as one blob, rather than jumping straight to
@@ -166,6 +244,7 @@ var repoTypeArgPattern = regexp.MustCompile(`\brepo_type\s*=\s*["'](\w+)["']`)
 // default -fail-on.
 func extractReferences(text, label string) []repoRef {
 	text = stripDeadPythonText(text)
+	constants := collectStringConstants(text)
 	var refs []repoRef
 	for _, p := range extractPatterns {
 		for _, m := range p.re.FindAllStringSubmatchIndex(text, -1) {
@@ -181,7 +260,7 @@ func extractReferences(text, label string) []repoRef {
 	for _, m := range fromPretrainedCallPattern.FindAllStringSubmatchIndex(text, -1) {
 		args := text[m[2]:m[3]]
 		line := 1 + strings.Count(text[:m[0]], "\n")
-		for _, id := range leadingPositionalIDs(args) {
+		for _, id := range leadingPositionalIDs(args, constants) {
 			refs = append(refs, repoRef{
 				id:     id,
 				kind:   kindModel,
