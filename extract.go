@@ -89,11 +89,10 @@ func leadingPositionalIDs(args string) []string {
 // hfHubDownloadCallPattern matches an hf_hub_download(...)/snapshot_download(...)
 // call's whole argument list as one blob, rather than jumping straight to
 // repo_id= the way extractPatterns' other entries do. Both functions also
-// take a repo_type= keyword telling the Hub whether repo_id names a model or
-// a dataset (or a Space, which this tool doesn't check), and repo_type can
-// legally appear either before or after repo_id since both are keyword
-// arguments — capturing the whole call first lets repoTypeArgPattern find it
-// regardless of order.
+// take a repo_type= keyword telling the Hub whether repo_id names a model, a
+// dataset, or a Space, and repo_type can legally appear either before or
+// after repo_id since both are keyword arguments — capturing the whole call
+// first lets repoTypeArgPattern find it regardless of order.
 var hfHubDownloadCallPattern = regexp.MustCompile(`\b(?:hf_hub_download|snapshot_download)\(([^)]*)\)`)
 
 var repoIDArgPattern = regexp.MustCompile(`\brepo_id\s*=\s*["'](` + idPattern + `)["']`)
@@ -119,7 +118,14 @@ var positionalRepoIDArgPattern = regexp.MustCompile(`^\s*["'](` + idPattern + `)
 // so getting this wrong means checking the wrong Hub endpoint entirely: a
 // real, existing dataset (e.g. allenai/c4, confirmed 200 on
 // /api/datasets/allenai/c4) looked up as a model (401 on /api/models/) comes
-// back a false "not_found" hallucination.
+// back a false "not_found" hallucination — and the same is true of
+// repo_type="space": confirmed live against real conversion/test scripts in
+// huggingface/transformers' own source (not docstrings — e.g.
+// models/owlv2/convert_owlv2_to_hf.py's
+// `hf_hub_download(repo_id="adirik/OWL-ViT", repo_type="space",
+// filename="assets/astronaut.png")`), every one of those real, existing
+// Spaces returns 401 from /api/models/ (not_found, by this tool's own
+// mapping) and 200 from /api/spaces/.
 var repoTypeArgPattern = regexp.MustCompile(`\brepo_type\s*=\s*["'](\w+)["']`)
 
 // extractReferences scans source text for Hugging Face Hub references and
@@ -193,8 +199,13 @@ func extractReferences(text, label string) []repoRef {
 			continue
 		}
 		kind := kindModel
-		if tm := repoTypeArgPattern.FindStringSubmatch(args); tm != nil && tm[1] == "dataset" {
-			kind = kindDataset
+		if tm := repoTypeArgPattern.FindStringSubmatch(args); tm != nil {
+			switch tm[1] {
+			case "dataset":
+				kind = kindDataset
+			case "space":
+				kind = kindSpace
+			}
 		}
 		line := 1 + strings.Count(text[:m[0]], "\n")
 		refs = append(refs, repoRef{

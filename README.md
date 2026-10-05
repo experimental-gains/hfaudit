@@ -60,11 +60,24 @@ Recognized call shapes: `X.from_pretrained("org/name")` (any class —
 `"bert-base-uncased"` with no namespace) or more than one `/` (a local
 path) aren't Hub IDs this tool can look up, and are skipped.
 
+`hf_hub_download`/`snapshot_download`'s `repo_type=` keyword is
+respected for all three Hub repo kinds it accepts —
+`repo_type="dataset"` checks `/api/datasets/{id}`, `repo_type="space"`
+checks `/api/spaces/{id}`, and the default (no `repo_type=`, or
+anything else) checks `/api/models/{id}`. This matters: a real,
+existing Space checked against the models endpoint comes back 401 —
+the same shape as a genuine hallucination — so without this, every
+`hf_hub_download(repo_id="...", repo_type="space")` call (real,
+live usage in transformers' own conversion scripts, e.g.
+`hf_hub_download(repo_id="adirik/OWL-ViT", repo_type="space", ...)`)
+would be misreported as `not_found`.
+
 ```
 $ hfaudit .
 not_found model   0penai/this-definitely-does-not-exist-xyz  [looks like "openai", edit distance 1]  (model.py:4)
 ok        model   openai/clip-vit-base-patch32  (model.py:3)
 ok        dataset stanfordnlp/imdb  (model.py:7)
+ok        space   adirik/OWL-ViT  (model.py:9)
 ```
 
 Exit code is `1` if any finding matches `-fail-on` (default

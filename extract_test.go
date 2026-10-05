@@ -37,6 +37,8 @@ posmulti = hf_hub_download(
     "config.json",
 )
 posdataset = hf_hub_download("allenai/c4-positional", "README.md", repo_type="dataset")
+spc = hf_hub_download(repo_id="adirik/OWL-ViT", repo_type="space", filename="assets/astronaut.png")
+spc2 = hf_hub_download(repo_type="space", repo_id="ysharma/nougat", filename="input/nougat.pdf")
 `
 	refs := extractReferences(src, "sample.py")
 
@@ -57,6 +59,8 @@ posdataset = hf_hub_download("allenai/c4-positional", "README.md", repo_type="da
 		"distilbert/distilgpt2":                                      kindModel,
 		"bert-base-multilingual-cased/variant":                       kindModel,
 		"allenai/c4-positional":                                      kindDataset,
+		"adirik/OWL-ViT":                                             kindSpace,
+		"ysharma/nougat":                                             kindSpace,
 	}
 
 	got := map[string]repoKind{}

@@ -72,8 +72,11 @@ type hfRepoMeta struct {
 // into the same not_found finding.
 func (c *httpHFClient) check(id string, kind repoKind) checkResult {
 	endpoint := "models"
-	if kind == kindDataset {
+	switch kind {
+	case kindDataset:
 		endpoint = "datasets"
+	case kindSpace:
+		endpoint = "spaces"
 	}
 	// id's own "/" separates the org and name segments and must stay a
 	// literal path separator, so build the URL by concatenation rather

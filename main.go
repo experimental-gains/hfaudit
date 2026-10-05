@@ -22,6 +22,7 @@ type repoKind string
 const (
 	kindModel   repoKind = "model"
 	kindDataset repoKind = "dataset"
+	kindSpace   repoKind = "space"
 )
 
 type finding struct {
